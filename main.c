@@ -40,7 +40,7 @@
 
 
 /******************************************************************************
-* Header files 
+* Header files
 ******************************************************************************/
 #include "cy_pdl.h"
 #include "cybsp_types.h"
@@ -54,18 +54,9 @@ int main(void)
 {
     cy_rslt_t result;
 
-    /* Configure user button as hibernate wake up source */
-    Cy_SysPm_SetHibWakeupSource(CY_SYSPM_HIBPIN1_LOW);
-
-    /* Unfreeze IO if device is waking up from hibernate */
-    if(Cy_SysPm_GetIoFreezeStatus())
-    {
-        Cy_SysPm_IoUnfreeze();
-    }
-
     /* Initialize the device and board peripherals */
     result = cybsp_init();
-    
+
     /* Board init failed. Stop program execution */
     if (result != CY_RSLT_SUCCESS)
     {
@@ -75,30 +66,28 @@ int main(void)
     /* Initialize retarget-io to use the debug UART port */
     result = cy_retarget_io_init(CYBSP_DEBUG_UART_TX, CYBSP_DEBUG_UART_RX, \
                                  CY_RETARGET_IO_BAUDRATE);
-
     /* retarget-io init failed. Stop program execution */
     if (result != CY_RSLT_SUCCESS)
     {
         CY_ASSERT(0);
     }
 
-
     /* Initialize the User LEDs */
     result = cyhal_gpio_init((cyhal_gpio_t)CYBSP_USER_LED1, CYHAL_GPIO_DIR_OUTPUT,
                              CYHAL_GPIO_DRIVE_STRONG, CYBSP_LED_STATE_OFF);
     result |= cyhal_gpio_init((cyhal_gpio_t)CYBSP_USER_LED2, CYHAL_GPIO_DIR_OUTPUT,
                               CYHAL_GPIO_DRIVE_STRONG, CYBSP_LED_STATE_OFF);
-    
+
     /* Configure USER_BTN */
     result |= cyhal_gpio_init((cyhal_gpio_t)CYBSP_USER_BTN, CYHAL_GPIO_DIR_INPUT,
                               CYHAL_GPIO_DRIVE_PULLUP, CYBSP_BTN_OFF);
-    
+
     /* gpio init failed. Stop program execution */
     if (result != CY_RSLT_SUCCESS)
     {
         CY_ASSERT(0);
     }
-    
+
     /* \x1b[2J\x1b[;H - ANSI ESC sequence for clear screen */
     printf("\x1b[2J\x1b[;H");
     printf("PSoC 6 MCU With BLE Connectivity Find Me\r\n\n");

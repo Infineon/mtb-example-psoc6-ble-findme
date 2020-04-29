@@ -6,7 +6,7 @@
 * Related Document: README.md
 *
 *******************************************************************************
-* Copyright (2019), Cypress Semiconductor Corporation. All rights reserved.
+* Copyright (2019 - 2020), Cypress Semiconductor Corporation. All rights reserved.
 *******************************************************************************
 * This software, including source code, documentation and related materials
 * ("Software"), is owned by Cypress Semiconductor Corporation or one of its
@@ -51,16 +51,19 @@
 /*******************************************************************************
 * Macros
 ********************************************************************************/
-#define BLESS_INTR_PRIORITY     (1u)
-#define MCWDT_INTR_PRIORITY     (7u)
-#define MCWDT_MATCH_VALUE       (8192u) /* for 0.25 sec with MCWDT clock 32768 Hz */
+#define BLESS_INTR_PRIORITY       (1u)
+#define WAKEUP_INTR_PRIORITY      (7u)
+#define WAKEUP_TIMER_DELAY_MS     (250)
+/* Timer value to get 0.25 sec with wakeup timer input clock of 32768 Hz,
+ * where 32768Hz is LFCLK in PSoC 6 MCU */
+#define WAKEUP_TIMER_MATCH_VALUE  (WAKEUP_TIMER_DELAY_MS * 32768 / 1000)
 
 
 /*******************************************************************************
 * Global Variables
 ********************************************************************************/
-cyhal_lptimer_t mcwdt;
-bool mcwdt_intr_flag = false;
+cyhal_lptimer_t wakeup_timer;
+bool wakeup_intr_flag = false;
 bool gpio_intr_flag = false;
 uint8 alert_level = CY_BLE_NO_ALERT;
 cy_stc_ble_conn_handle_t app_conn_handle;
@@ -73,8 +76,8 @@ static void ble_init(void);
 static void bless_interrupt_handler(void);
 static void stack_event_handler(uint32 event, void* eventParam);
 static void ble_start_advertisement(void);
-static void mcwdt_init(void);
-static void mcwdt_interrupt_handler(void *handler_arg, cyhal_lptimer_event_t event);
+static void wakeup_timer_init(void);
+static void wakeup_timer_interrupt_handler(void *handler_arg, cyhal_lptimer_event_t event);
 static void ble_ias_callback(uint32 event, void *eventParam);
 static void enter_low_power_mode(void);
 
@@ -83,16 +86,16 @@ static void enter_low_power_mode(void);
 * Function Name: ble_findme_init
 ********************************************************************************
 * Summary:
-* This function initializes the BLE and MCWDT.
+* This function initializes the BLE and a deep sleep wakeup timer.
 *
 *******************************************************************************/
 void ble_findme_init(void)
 {
     /* Configure BLE */
     ble_init();
-    
-    /* Configure MCWDT */
-    mcwdt_init();
+
+    /* Configure deep sleep wakeup timer */
+    wakeup_timer_init();
 
     /* Enable global interrupts */
     __enable_irq();
@@ -112,14 +115,14 @@ void ble_findme_process(void)
     /* Enter low power mode. The call to enter_low_power_mode also causes the
      * device to enter hibernate mode if the BLE stack is shutdown.
      */
-    enter_low_power_mode();
+	enter_low_power_mode();
 
     /* Cy_BLE_ProcessEvents() allows the BLE stack to process pending events */
     Cy_BLE_ProcessEvents();
-    
-    if(mcwdt_intr_flag)
+
+    if(wakeup_intr_flag)
     {
-        mcwdt_intr_flag = false;
+        wakeup_intr_flag = false;
 
         /* Update CYBSP_USER_LED1 to indicate current BLE status */
         if(CY_BLE_ADV_STATE_ADVERTISING == Cy_BLE_GetAdvertisementState())
@@ -269,7 +272,6 @@ static void stack_event_handler(uint32_t event, void* eventParam)
                     break;
                 }
             }
-
             break;
         }
 
@@ -320,7 +322,6 @@ static void stack_event_handler(uint32_t event, void* eventParam)
         case CY_BLE_EVT_GAP_ENHANCE_CONN_COMPLETE:
         {
             printf("[INFO] : GAP enhanced connection complete \r\n");
-
             break;
         }
 
@@ -329,7 +330,7 @@ static void stack_event_handler(uint32_t event, void* eventParam)
          */
         case CY_BLE_EVT_GAP_DEVICE_DISCONNECTED:
         {
-            if(CY_BLE_CONN_STATE_DISCONNECTED == 
+            if(CY_BLE_CONN_STATE_DISCONNECTED ==
                Cy_BLE_GetConnectionState(app_conn_handle))
             {
                 printf("[INFO] : GAP device disconnected\r\n");
@@ -420,7 +421,7 @@ void ble_ias_callback(uint32 event, void *eventParam)
     {
         /* Read the updated Alert Level value from the GATT database */
         Cy_BLE_IASS_GetCharacteristicValue(CY_BLE_IAS_ALERT_LEVEL,
-            sizeof(alert_level), &alert_level);
+                                           sizeof(alert_level), &alert_level);
     }
 
     /* Remove warning for unused parameter */
@@ -438,14 +439,14 @@ void ble_ias_callback(uint32 event, void *eventParam)
 static void ble_start_advertisement(void)
 {
     cy_en_ble_api_result_t ble_api_result;
-    
+
     if((CY_BLE_ADV_STATE_ADVERTISING != Cy_BLE_GetAdvertisementState()) &&
        (Cy_BLE_GetNumOfActiveConn() < CY_BLE_CONN_COUNT))
     {
         ble_api_result = Cy_BLE_GAPP_StartAdvertisement(
-                            CY_BLE_ADVERTISING_FAST, 
+                            CY_BLE_ADVERTISING_FAST,
                             CY_BLE_PERIPHERAL_CONFIGURATION_0_INDEX);
-        
+
         if(CY_BLE_SUCCESS != ble_api_result)
         {
             printf("[ERROR] : Failed to start advertisement \r\n");
@@ -455,41 +456,42 @@ static void ble_start_advertisement(void)
 
 
 /*******************************************************************************
-* Function Name: mcwdt_interrupt_handler
+* Function Name: wakeup_timer_interrupt_handler
 ********************************************************************************
 * Summary:
-*  MCWDT interrupt handler.
+*  wakeup_timer interrupt handler.
 *
 * Parameters:
 *  void *handler_arg (unused)
 *  cyhal_lptimer_irq_event_t event (unused)
 *
 *******************************************************************************/
-void mcwdt_interrupt_handler(void *handler_arg, cyhal_lptimer_event_t event)
+void wakeup_timer_interrupt_handler(void *handler_arg, cyhal_lptimer_event_t event)
 {
     /* Set the interrupt flag */
-    mcwdt_intr_flag = true;
+    wakeup_intr_flag = true;
 
     /* Reload the timer to get periodic interrupt */
-    cyhal_lptimer_reload(&mcwdt);
+    cyhal_lptimer_reload(&wakeup_timer);
+    cyhal_lptimer_set_match(&wakeup_timer, WAKEUP_TIMER_MATCH_VALUE);
 }
 
 
 /*******************************************************************************
-* Function Name: mcwdt_init
+* Function Name: wakeup_timer_init
 ********************************************************************************
 * Summary:
-*  Initialize MCWDT for generating interrupt.
+*  Initialize deep sleep wakeup timer for generating interrupt.
 *
 *******************************************************************************/
-static void mcwdt_init(void)
+static void wakeup_timer_init(void)
 {
-    cyhal_lptimer_init(&mcwdt);
-    cyhal_lptimer_set_time(&mcwdt, MCWDT_MATCH_VALUE);
-    cyhal_lptimer_reload(&mcwdt);
-    cyhal_lptimer_register_callback(&mcwdt, mcwdt_interrupt_handler, NULL);
-    cyhal_lptimer_enable_event(&mcwdt, CYHAL_LPTIMER_COMPARE_MATCH, 
-                               MCWDT_INTR_PRIORITY, true);
+    cyhal_lptimer_init(&wakeup_timer);
+    cyhal_lptimer_set_match(&wakeup_timer, WAKEUP_TIMER_MATCH_VALUE);
+    cyhal_lptimer_reload(&wakeup_timer);
+    cyhal_lptimer_register_callback(&wakeup_timer, wakeup_timer_interrupt_handler, NULL);
+    cyhal_lptimer_enable_event(&wakeup_timer, CYHAL_LPTIMER_COMPARE_MATCH,
+                               WAKEUP_INTR_PRIORITY, true);
 }
 
 
@@ -518,13 +520,12 @@ static void enter_low_power_mode(void)
         cyhal_gpio_write((cyhal_gpio_t)CYBSP_USER_LED2, CYBSP_LED_STATE_OFF);
 
         /* Wait until UART transfer complete  */
-        while(0UL == Cy_SCB_UART_IsTxComplete(cy_retarget_io_uart_obj.base));
-
-        Cy_SysPm_Hibernate();
+        while(1UL == cyhal_uart_is_tx_active(&cy_retarget_io_uart_obj));
+        cyhal_syspm_hibernate(CYHAL_SYSPM_HIBERNATE_PINB_LOW);
     }
     else
     {
-        Cy_SysPm_CpuEnterDeepSleep(CY_SYSPM_WAIT_FOR_INTERRUPT);
+        cyhal_syspm_deepsleep();
     }
 }
 
